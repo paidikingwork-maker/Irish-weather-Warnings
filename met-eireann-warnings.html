@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Met Éireann Weather Warnings</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #1a5276 0%, #2e86ab 100%);
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    header {
+      text-align: center;
+      color: white;
+      margin-bottom: 30px;
+    }
+    header h1 {
+      font-size: 2rem;
+      margin-bottom: 5px;
+    }
+    header p {
+      opacity: 0.8;
+    }
+    .warning-card {
+      background: white;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 15px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    .warning-card h2 {
+      color: #1a5276;
+      font-size: 1.2rem;
+      margin-bottom: 10px;
+    }
+    .warning-card p {
+      color: #555;
+      line-height: 1.6;
+    }
+    .warning-card .date {
+      font-size: 0.85rem;
+      color: #888;
+      margin-top: 10px;
+    }
+    .warning-card a {
+      color: #2e86ab;
+      text-decoration: none;
+    }
+    .warning-card a:hover {
+      text-decoration: underline;
+    }
+    .no-warnings {
+      background: #d4edda;
+      color: #155724;
+      padding: 20px;
+      border-radius: 12px;
+      text-align: center;
+    }
+    .error {
+      background: #f8d7da;
+      color: #721c24;
+      padding: 20px;
+      border-radius: 12px;
+      text-align: center;
+    }
+    .error a {
+      color: #721c24;
+    }
+    .loading {
+      background: white;
+      padding: 40px;
+      border-radius: 12px;
+      text-align: center;
+      color: #555;
+    }
+    .refresh-btn {
+      display: inline-block;
+      margin-top: 20px;
+      padding: 10px 20px;
+      background: white;
+      color: #1a5276;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 1rem;
+    }
+    .refresh-btn:hover {
+      background: #f0f0f0;
+    }
+    .cache-status {
+      color: rgba(255,255,255,0.7);
+      font-size: 0.85rem;
+      margin-top: 10px;
+    }
+    .cache-status span {
+      background: rgba(255,255,255,0.2);
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+    .auto-refresh {
+      margin-top: 15px;
+      color: white;
+      font-size: 0.9rem;
+    }
+    .auto-refresh label {
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .auto-refresh input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      cursor: pointer;
+    }
+    .countdown {
+      background: rgba(255,255,255,0.2);
+      padding: 2px 8px;
+      border-radius: 4px;
+      margin-left: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🌦️ Met Éireann Weather Warnings</h1>
+      <p>Live weather warnings for Ireland</p>
+    </header>
+
+    <div id="warnings">
+      <div class="loading">Loading weather warnings...</div>
+    </div>
+
+    <div style="text-align: center;">
+      <button class="refresh-btn" onclick="fetchWarnings(true)">↻ Refresh</button>
+      <a href="https://www.met.ie/warnings-today.html" target="_blank" class="refresh-btn" style="margin-left: 10px; text-decoration: none;">🌐 View Warnings</a>
+      <div id="cache-status" class="cache-status"></div>
+      <div class="auto-refresh">
+        <span id="countdown" class="countdown"></span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const RSS_URL = 'https://www.met.ie/warningsxml/rss_warnings.xml';
+    const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
+    const CACHE_KEY = 'met_eireann_warnings';
+    const CACHE_DURATION = 15 * 60 * 1000; // 15 minutes in milliseconds
+
+    function getCache() {
+      try {
+        const cached = localStorage.getItem(CACHE_KEY);
+        if (!cached) return null;
+
+        const { data, timestamp } = JSON.parse(cached);
+        const age = Date.now() - timestamp;
+
+        if (age > CACHE_DURATION) {
+          localStorage.removeItem(CACHE_KEY);
+          return null;
+        }
+
+        return { data, timestamp, age };
+      } catch {
+        return null;
+      }
+    }
+
+    function setCache(data) {
+      try {
+        localStorage.setItem(CACHE_KEY, JSON.stringify({
+          data,
+          timestamp: Date.now()
+        }));
+      } catch {
+        // localStorage might be full or disabled
+      }
+    }
+
+    function updateCacheStatus(timestamp, fromCache) {
+      const statusEl = document.getElementById('cache-status');
+      const date = new Date(timestamp);
+      const timeStr = date.toLocaleTimeString('en-IE', { hour: '2-digit', minute: '2-digit' });
+      const source = fromCache ? 'cached' : 'live';
+      statusEl.innerHTML = `<span>Last updated: ${timeStr} (${source})</span>`;
+    }
+
+    function renderWarnings(xmlText, timestamp, fromCache) {
+      const container = document.getElementById('warnings');
+      const parser = new DOMParser();
+      const xml = parser.parseFromString(xmlText, 'text/xml');
+      const items = xml.querySelectorAll('item');
+
+      if (items.length === 0) {
+        container.innerHTML = '<div class="no-warnings">✓ No active weather warnings for Ireland</div>';
+        updateCacheStatus(timestamp, fromCache);
+        return;
+      }
+
+      let html = '';
+      items.forEach(item => {
+        const title = item.querySelector('title')?.textContent || 'Weather Warning';
+        const description = item.querySelector('description')?.textContent || '';
+        const link = item.querySelector('link')?.textContent || '';
+        const pubDate = item.querySelector('pubDate')?.textContent || '';
+
+        const formattedDate = pubDate ? new Date(pubDate).toLocaleString('en-IE') : '';
+
+        html += `
+          <div class="warning-card">
+            <h2>${escapeHtml(title)}</h2>
+            <p>${escapeHtml(description)}</p>
+            ${formattedDate ? `<p class="date">Published: ${formattedDate}</p>` : ''}
+            ${link ? `<p><a href="${escapeHtml(link)}" target="_blank">View full details →</a></p>` : ''}
+          </div>
+        `;
+      });
+
+      container.innerHTML = html;
+      updateCacheStatus(timestamp, fromCache);
+    }
+
+    async function fetchWarnings(forceRefresh = false) {
+      const container = document.getElementById('warnings');
+
+      // Check cache first (unless force refresh)
+      if (!forceRefresh) {
+        const cached = getCache();
+        if (cached) {
+          renderWarnings(cached.data, cached.timestamp, true);
+          return;
+        }
+      }
+
+      container.innerHTML = '<div class="loading">Loading weather warnings...</div>';
+
+      try {
+        const response = await fetch(CORS_PROXY + encodeURIComponent(RSS_URL));
+
+        if (!response.ok) {
+          throw new Error('Failed to fetch RSS feed');
+        }
+
+        const xmlText = await response.text();
+
+        // Cache the response
+        setCache(xmlText);
+
+        renderWarnings(xmlText, Date.now(), false);
+
+      } catch (error) {
+        console.error('Error fetching warnings:', error);
+
+        // Try to show stale cache on error
+        const staleCache = localStorage.getItem(CACHE_KEY);
+        if (staleCache) {
+          const { data, timestamp } = JSON.parse(staleCache);
+          renderWarnings(data, timestamp, true);
+          const statusEl = document.getElementById('cache-status');
+          statusEl.innerHTML += ' <span style="color: #ffcc00;">(offline)</span>';
+          return;
+        }
+
+        container.innerHTML = `
+          <div class="error">
+            <p>Unable to load weather warnings.</p>
+            <p style="margin-top: 10px;">
+              <a href="https://www.met.ie/warnings-today" target="_blank">View warnings on Met.ie →</a>
+            </p>
+          </div>
+        `;
+      }
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    fetchWarnings();
+
+    // Auto-refresh functionality
+    const AUTO_REFRESH_INTERVAL = 10 * 60 * 1000; // 10 minutes
+    let autoRefreshTimer = null;
+    let countdownTimer = null;
+    let secondsRemaining = 0;
+
+    function startAutoRefresh() {
+      secondsRemaining = AUTO_REFRESH_INTERVAL / 1000;
+      updateCountdown();
+
+      countdownTimer = setInterval(() => {
+        secondsRemaining--;
+        updateCountdown();
+      }, 1000);
+
+      autoRefreshTimer = setInterval(() => {
+        fetchWarnings(true);
+        secondsRemaining = AUTO_REFRESH_INTERVAL / 1000;
+      }, AUTO_REFRESH_INTERVAL);
+    }
+
+    function updateCountdown() {
+      const countdownEl = document.getElementById('countdown');
+      const minutes = Math.floor(secondsRemaining / 60);
+      const seconds = secondsRemaining % 60;
+      countdownEl.textContent = `Next update: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+    }
+
+    // Start auto-refresh automatically
+    document.getElementById('countdown').style.display = 'inline';
+    startAutoRefresh();
+  </script>
+</body>
+</html>
