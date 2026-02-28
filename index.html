@@ -174,6 +174,14 @@ header {
       <p>Live Weather Warnings For Ireland - <span id="current-date"></span></p>
     </header>
 
+    <!-- Temperature Display -->
+    <div id="temperature-card" class="warning-card" style="text-align: center; margin-bottom: 25px; padding: 15px;">
+      <div style="font-size: 0.85rem; color: #888; margin-bottom: 3px;">📍 Meta Data Centre, Clonee, Ireland</div>
+      <div id="temperature" style="font-size: 2rem; font-weight: bold; color: #1a5276; display: inline;">--°C</div>
+      <span id="weather-condition" style="font-size: 0.95rem; color: #555; margin-left: 10px;"></span>
+      <div id="weather-details" style="font-size: 0.8rem; color: #888; margin-top: 8px;"></div>
+    </div>
+
     <h3 style="color: #1a5276; margin-bottom: 15px;">⚠️ Weather Warnings</h3>
     <div id="warnings">
       <div class="loading">Loading weather warnings...</div>
@@ -185,7 +193,7 @@ header {
     </div>
 
     <div style="text-align: center;">
-      <button class="refresh-btn" onclick="fetchAllWarnings(true)">↻ Refresh</button>
+      <button class="refresh-btn" onclick="fetchAllWarnings(true); fetchTemperature();">↻ Refresh</button>
       <a href="https://www.met.ie/warnings-today.html" target="_blank" class="refresh-btn" style="margin-left: 10px; text-decoration: none;">🌐 View Warnings</a>
       <div id="cache-status" class="cache-status"></div>
       <div class="auto-refresh">
@@ -359,6 +367,102 @@ header {
 
     fetchAllWarnings();
 
+    // Fetch temperature - try Met Éireann first, fallback to Open-Meteo
+    const MET_EIREANN_WEATHER_API = 'https://prodapi.metweb.ie/observations/dublin/today';
+    const OPEN_METEO_API = 'https://api.open-meteo.com/v1/forecast?latitude=53.4167&longitude=-6.45&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code&timezone=Europe%2FDublin';
+
+    async function fetchTemperature() {
+      // Try Met Éireann first
+      try {
+        const response = await fetch(CORS_PROXY + encodeURIComponent(MET_EIREANN_WEATHER_API));
+        if (!response.ok) throw new Error('Met Éireann API error');
+
+        const data = await response.json();
+        const latest = data[data.length - 1];
+
+        if (!latest) throw new Error('No weather data available');
+
+        document.getElementById('temperature').textContent = `${latest.temperature}°C`;
+
+        const condition = latest.weatherDescription !== 'N/A' && latest.weatherDescription
+          ? getWeatherEmoji(latest.weatherDescription) + ' ' + latest.weatherDescription
+          : '';
+        document.getElementById('weather-condition').textContent = condition;
+
+        document.getElementById('weather-details').innerHTML =
+          `💨 Wind: ${latest.windSpeed} km/h ${latest.cardinalWindDirection}  |  💧 Humidity: ${latest.humidity.trim()}%<br>
+           <span style="font-size: 0.8rem; color: #aaa;">Dublin Airport · ${latest.reportTime}</span>`;
+        return;
+      } catch (error) {
+        console.error('Met Éireann error:', error);
+      }
+
+      // Fallback to Open-Meteo
+      try {
+        const response = await fetch(OPEN_METEO_API);
+        if (!response.ok) throw new Error('Open-Meteo API error');
+
+        const data = await response.json();
+        const current = data.current;
+
+        document.getElementById('temperature').textContent = `${Math.round(current.temperature_2m)}°C`;
+        document.getElementById('weather-condition').textContent = getWeatherCodeDescription(current.weather_code);
+        document.getElementById('weather-details').innerHTML =
+          `💨 Wind: ${Math.round(current.wind_speed_10m)} km/h  |  💧 Humidity: ${current.relative_humidity_2m}%<br>
+           <span style="font-size: 0.8rem; color: #aaa;">Clonee area · Live</span>`;
+        return;
+      } catch (error) {
+        console.error('Open-Meteo error:', error);
+      }
+
+      // Fallback: show error with link
+      document.getElementById('temperature').textContent = '--°C';
+      document.getElementById('weather-condition').textContent = '';
+      document.getElementById('weather-details').innerHTML =
+        '<a href="https://www.met.ie/weather-forecast/clonee-meath" target="_blank" style="color: #2e86ab;">View on Met.ie →</a>';
+    }
+
+    function getWeatherCodeDescription(code) {
+      const descriptions = {
+        0: '☀️ Clear sky',
+        1: '🌤️ Mainly clear',
+        2: '⛅ Partly cloudy',
+        3: '☁️ Overcast',
+        45: '🌫️ Foggy',
+        48: '🌫️ Rime fog',
+        51: '🌧️ Light drizzle',
+        53: '🌧️ Drizzle',
+        55: '🌧️ Dense drizzle',
+        61: '🌧️ Slight rain',
+        63: '🌧️ Moderate rain',
+        65: '🌧️ Heavy rain',
+        71: '🌨️ Slight snow',
+        73: '🌨️ Moderate snow',
+        75: '🌨️ Heavy snow',
+        80: '🌦️ Rain showers',
+        81: '🌦️ Moderate showers',
+        82: '🌦️ Heavy showers',
+        95: '⛈️ Thunderstorm',
+        96: '⛈️ Thunderstorm with hail',
+        99: '⛈️ Heavy thunderstorm'
+      };
+      return descriptions[code] || '🌤️ Unknown';
+    }
+
+    function getWeatherEmoji(description) {
+      const desc = description.toLowerCase();
+      if (desc.includes('rain') || desc.includes('drizzle') || desc.includes('showers')) return '🌧️';
+      if (desc.includes('thunder')) return '⛈️';
+      if (desc.includes('snow') || desc.includes('sleet')) return '🌨️';
+      if (desc.includes('fog') || desc.includes('mist')) return '🌫️';
+      if (desc.includes('cloud') || desc.includes('overcast')) return '☁️';
+      if (desc.includes('fair') || desc.includes('partly')) return '⛅';
+      if (desc.includes('clear') || desc.includes('sun')) return '☀️';
+      return '🌤️';
+    }
+
+    fetchTemperature();
+
     // Update current date in header
     function updateCurrentDate() {
       const dateEl = document.getElementById('current-date');
@@ -389,6 +493,7 @@ header {
 
       autoRefreshTimer = setInterval(() => {
         fetchAllWarnings(true);
+        fetchTemperature();
         secondsRemaining = AUTO_REFRESH_INTERVAL / 1000;
       }, AUTO_REFRESH_INTERVAL);
     }
