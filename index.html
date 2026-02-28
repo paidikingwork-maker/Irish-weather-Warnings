@@ -174,12 +174,18 @@ header {
       <p>Live Weather Warnings For Ireland - <span id="current-date"></span></p>
     </header>
 
+    <h3 style="color: #1a5276; margin-bottom: 15px;">⚠️ Weather Warnings</h3>
     <div id="warnings">
       <div class="loading">Loading weather warnings...</div>
     </div>
 
+    <h3 style="color: #1a5276; margin: 25px 0 15px;">🌊 Marine Warnings</h3>
+    <div id="marine-warnings">
+      <div class="loading">Loading marine warnings...</div>
+    </div>
+
     <div style="text-align: center;">
-      <button class="refresh-btn" onclick="fetchWarnings(true)">↻ Refresh</button>
+      <button class="refresh-btn" onclick="fetchAllWarnings(true)">↻ Refresh</button>
       <a href="https://www.met.ie/warnings-today.html" target="_blank" class="refresh-btn" style="margin-left: 10px; text-decoration: none;">🌐 View Warnings</a>
       <div id="cache-status" class="cache-status"></div>
       <div class="auto-refresh">
@@ -189,21 +195,21 @@ header {
   </div>
 
   <script>
-    const RSS_URL = 'https://www.met.ie/warningsxml/rss_warnings.xml';
+    const API_URL = 'https://prodapi.metweb.ie/warnings/geo';
     const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
-    const CACHE_KEY = 'met_eireann_warnings';
+    const CACHE_KEY = 'met_eireann_all_warnings';
     const CACHE_DURATION = 15 * 60 * 1000; // 15 minutes in milliseconds
 
-    function getCache() {
+    function getCache(key) {
       try {
-        const cached = localStorage.getItem(CACHE_KEY);
+        const cached = localStorage.getItem(key);
         if (!cached) return null;
 
         const { data, timestamp } = JSON.parse(cached);
         const age = Date.now() - timestamp;
 
         if (age > CACHE_DURATION) {
-          localStorage.removeItem(CACHE_KEY);
+          localStorage.removeItem(key);
           return null;
         }
 
@@ -213,9 +219,9 @@ header {
       }
     }
 
-    function setCache(data) {
+    function setCache(key, data) {
       try {
-        localStorage.setItem(CACHE_KEY, JSON.stringify({
+        localStorage.setItem(key, JSON.stringify({
           data,
           timestamp: Date.now()
         }));
@@ -233,68 +239,83 @@ header {
       statusEl.innerHTML = `<span>Last updated: ${dateStr} at ${timeStr} (${source})</span>`;
     }
 
-    function renderWarnings(xmlText, timestamp, fromCache) {
-      const container = document.getElementById('warnings');
-      const parser = new DOMParser();
-      const xml = parser.parseFromString(xmlText, 'text/xml');
-      const items = xml.querySelectorAll('item');
+    function getLevelColor(level) {
+      const colors = {
+        'Yellow': '#ffc107',
+        'Orange': '#fd7e14',
+        'Red': '#dc3545'
+      };
+      return colors[level] || '#6c757d';
+    }
 
-      if (items.length === 0) {
-        container.innerHTML = '<div class="no-warnings">✓ No active weather warnings for Ireland</div>';
-        updateCacheStatus(timestamp, fromCache);
+    function renderWarnings(warnings, containerId, noWarningsText) {
+      const container = document.getElementById(containerId);
+
+      if (!warnings || warnings.length === 0) {
+        container.innerHTML = `<div class="no-warnings">✓ ${noWarningsText}</div>`;
         return;
       }
 
       let html = '';
-      items.forEach(item => {
-        const title = item.querySelector('title')?.textContent || 'Weather Warning';
-        const description = item.querySelector('description')?.textContent || '';
-        const link = item.querySelector('link')?.textContent || '';
-        const pubDate = item.querySelector('pubDate')?.textContent || '';
-
-        const formattedDate = pubDate ? new Date(pubDate).toLocaleString('en-IE') : '';
+      warnings.forEach(warning => {
+        const levelColor = getLevelColor(warning.level);
+        const description = warning.description || warning.text || 'No details available';
 
         html += `
-          <div class="warning-card">
-            <h2>${escapeHtml(title)}</h2>
+          <div class="warning-card" style="border-left: 5px solid ${levelColor};">
+            <h2>
+              <span style="background: ${levelColor}; color: ${warning.level === 'Yellow' ? '#000' : '#fff'}; padding: 2px 8px; border-radius: 4px; font-size: 0.85rem; margin-right: 8px;">
+                ${warning.level || 'Unknown'}
+              </span>
+              ${escapeHtml(warning.headline || 'Weather Warning')}
+            </h2>
             <p>${escapeHtml(description)}</p>
-            ${formattedDate ? `<p class="date">Published: ${formattedDate}</p>` : ''}
-            ${link ? `<p><a href="${escapeHtml(link)}" target="_blank">View full details →</a></p>` : ''}
+            ${warning.issuedAt ? `<p class="date">Issued: ${warning.issuedAt}</p>` : ''}
+            ${warning.validUntil ? `<p class="date">Valid until: ${warning.validUntil}</p>` : ''}
+            ${warning.regions && warning.regions.length > 0 ? `<p class="date">Regions: ${warning.regions.join(', ')}</p>` : ''}
           </div>
         `;
       });
 
       container.innerHTML = html;
-      updateCacheStatus(timestamp, fromCache);
     }
 
-    async function fetchWarnings(forceRefresh = false) {
-      const container = document.getElementById('warnings');
+    async function fetchAllWarnings(forceRefresh = false) {
+      const weatherContainer = document.getElementById('warnings');
+      const marineContainer = document.getElementById('marine-warnings');
 
       // Check cache first (unless force refresh)
       if (!forceRefresh) {
-        const cached = getCache();
+        const cached = getCache(CACHE_KEY);
         if (cached) {
-          renderWarnings(cached.data, cached.timestamp, true);
+          const data = JSON.parse(cached.data);
+          renderWarnings(data.warnings.national, 'warnings', 'No active weather warnings for Ireland');
+          renderWarnings(data.warnings.marine, 'marine-warnings', 'No active marine warnings');
+          updateCacheStatus(cached.timestamp, true);
           return;
         }
       }
 
-      container.innerHTML = '<div class="loading">Loading weather warnings...</div>';
+      weatherContainer.innerHTML = '<div class="loading">Loading weather warnings...</div>';
+      marineContainer.innerHTML = '<div class="loading">Loading marine warnings...</div>';
 
       try {
-        const response = await fetch(CORS_PROXY + encodeURIComponent(RSS_URL));
+        const response = await fetch(CORS_PROXY + encodeURIComponent(API_URL));
 
         if (!response.ok) {
-          throw new Error('Failed to fetch RSS feed');
+          throw new Error('Failed to fetch warnings');
         }
 
-        const xmlText = await response.text();
+        const jsonText = await response.text();
+        const data = JSON.parse(jsonText);
 
         // Cache the response
-        setCache(xmlText);
+        setCache(CACHE_KEY, jsonText);
 
-        renderWarnings(xmlText, Date.now(), false);
+        // Render warnings
+        renderWarnings(data.warnings.national, 'warnings', 'No active weather warnings for Ireland');
+        renderWarnings(data.warnings.marine, 'marine-warnings', 'No active marine warnings');
+        updateCacheStatus(Date.now(), false);
 
       } catch (error) {
         console.error('Error fetching warnings:', error);
@@ -303,17 +324,27 @@ header {
         const staleCache = localStorage.getItem(CACHE_KEY);
         if (staleCache) {
           const { data, timestamp } = JSON.parse(staleCache);
-          renderWarnings(data, timestamp, true);
+          const warningData = JSON.parse(data);
+          renderWarnings(warningData.warnings.national, 'warnings', 'No active weather warnings for Ireland');
+          renderWarnings(warningData.warnings.marine, 'marine-warnings', 'No active marine warnings');
           const statusEl = document.getElementById('cache-status');
-          statusEl.innerHTML += ' <span style="color: #ffcc00;">(offline)</span>';
+          statusEl.innerHTML += ' <span style="color: #dc3545;">(offline)</span>';
           return;
         }
 
-        container.innerHTML = `
+        weatherContainer.innerHTML = `
           <div class="error">
             <p>Unable to load weather warnings.</p>
             <p style="margin-top: 10px;">
               <a href="https://www.met.ie/warnings-today" target="_blank">View warnings on Met.ie →</a>
+            </p>
+          </div>
+        `;
+        marineContainer.innerHTML = `
+          <div class="error">
+            <p>Unable to load marine warnings.</p>
+            <p style="margin-top: 10px;">
+              <a href="https://www.met.ie/marine-inland-lakes/warnings" target="_blank">View marine warnings on Met.ie →</a>
             </p>
           </div>
         `;
@@ -326,7 +357,7 @@ header {
       return div.innerHTML;
     }
 
-    fetchWarnings();
+    fetchAllWarnings();
 
     // Update current date in header
     function updateCurrentDate() {
@@ -357,7 +388,7 @@ header {
       }, 1000);
 
       autoRefreshTimer = setInterval(() => {
-        fetchWarnings(true);
+        fetchAllWarnings(true);
         secondsRemaining = AUTO_REFRESH_INTERVAL / 1000;
       }, AUTO_REFRESH_INTERVAL);
     }
