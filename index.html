@@ -267,7 +267,12 @@ header {
       let html = '';
       warnings.forEach(warning => {
         const levelColor = getLevelColor(warning.level);
-        const description = warning.description || warning.text || 'No details available';
+        // Don't show "Nil" as description
+        const description = (warning.description && warning.description !== 'Nil')
+          ? warning.description
+          : (warning.text && warning.text !== 'Nil')
+            ? warning.text
+            : '';
 
         html += `
           <div class="warning-card" style="border-left: 5px solid ${levelColor};">
@@ -277,7 +282,7 @@ header {
               </span>
               ${escapeHtml(warning.headline || 'Weather Warning')}
             </h2>
-            <p>${escapeHtml(description)}</p>
+            ${description ? `<p>${escapeHtml(description)}</p>` : ''}
             ${warning.issuedAt ? `<p class="date">Issued: ${warning.issuedAt}</p>` : ''}
             ${warning.validUntil ? `<p class="date">Valid until: ${warning.validUntil}</p>` : ''}
             ${warning.regions && warning.regions.length > 0 ? `<p class="date">Regions: ${warning.regions.join(', ')}</p>` : ''}
