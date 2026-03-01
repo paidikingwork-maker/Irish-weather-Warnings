@@ -131,6 +131,16 @@ header {
       margin-left: 10px;
     }
 
+    /* Refresh animation */
+    @keyframes pulse {
+      0% { opacity: 1; }
+      50% { opacity: 0.5; }
+      100% { opacity: 1; }
+    }
+    .refreshing {
+      animation: pulse 0.5s ease-in-out;
+    }
+
     /* Mobile responsiveness */
     @media (max-width: 600px) {
       body {
@@ -193,7 +203,7 @@ header {
     </div>
 
     <div style="text-align: center;">
-      <button class="refresh-btn" onclick="fetchAllWarnings(true); fetchTemperature();">↻ Refresh</button>
+      <button class="refresh-btn" onclick="refreshAll()">↻ Refresh</button>
       <a href="https://www.met.ie/warnings-today.html" target="_blank" class="refresh-btn" style="margin-left: 10px; text-decoration: none;">🌐 View Warnings</a>
       <div id="cache-status" class="cache-status"></div>
       <div class="auto-refresh">
@@ -203,10 +213,29 @@ header {
   </div>
 
   <script>
-    const API_URL = 'https://prodapi.metweb.ie/warnings/geo';
+    // Fetch warnings from multiple county endpoints and merge to get all regional warnings
     const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
-    const CACHE_KEY = 'met_eireann_all_warnings';
+    const CACHE_KEY = 'met_eireann_all_warnings_v3';
     const CACHE_DURATION = 15 * 60 * 1000; // 15 minutes in milliseconds
+
+    // All 32 Irish county codes - Republic of Ireland + Northern Ireland
+    const COUNTY_CODES = [
+      // Republic of Ireland (26 counties)
+      'EI01', 'EI02', 'EI03', 'EI04', 'EI06', 'EI07', 'EI10', 'EI11', 'EI12', 'EI13',
+      'EI14', 'EI15', 'EI16', 'EI18', 'EI19', 'EI20', 'EI21', 'EI22', 'EI23', 'EI24',
+      'EI25', 'EI26', 'EI27', 'EI29', 'EI30', 'EI31',
+      // Northern Ireland (6 counties)
+      'EI05',  // Antrim
+      'EI08',  // Armagh
+      'EI09',  // Down
+      'EI17',  // Fermanagh
+      'EI28',  // Derry
+      'tyrone' // Tyrone (no EI code found)
+    ];
+
+    // Just fetch one county to get warnings (they all return the same regional warnings that affect them)
+    // Cork (EI04) is a good choice as it's often affected by Atlantic weather
+    const API_URL = 'https://prodapi.met.ie/warnings/EI04';
 
     function getCache(key) {
       try {
@@ -301,9 +330,9 @@ header {
       if (!forceRefresh) {
         const cached = getCache(CACHE_KEY);
         if (cached) {
-          const data = JSON.parse(cached.data);
-          renderWarnings(data.warnings.national, 'warnings', 'No active weather warnings for Ireland');
-          renderWarnings(data.warnings.marine, 'marine-warnings', 'No active marine warnings');
+          const data = typeof cached.data === 'string' ? JSON.parse(cached.data) : cached.data;
+          renderWarnings(data.national, 'warnings', 'No active weather warnings for Ireland');
+          renderWarnings(data.marine, 'marine-warnings', 'No active marine warnings');
           updateCacheStatus(cached.timestamp, true);
           return;
         }
@@ -313,21 +342,56 @@ header {
       marineContainer.innerHTML = '<div class="loading">Loading marine warnings...</div>';
 
       try {
-        const response = await fetch(CORS_PROXY + encodeURIComponent(API_URL));
+        // Fetch from ALL counties to ensure complete coverage of regional warnings
+        const fetchPromises = COUNTY_CODES.map(code =>
+          fetch(CORS_PROXY + encodeURIComponent(`https://prodapi.met.ie/warnings/${code}`))
+            .then(r => r.ok ? r.json() : null)
+            .catch(() => null)
+        );
 
-        if (!response.ok) {
-          throw new Error('Failed to fetch warnings');
-        }
+        const results = await Promise.all(fetchPromises);
 
-        const jsonText = await response.text();
-        const data = JSON.parse(jsonText);
+        // Merge all warnings, deduplicating by ID
+        const allNational = new Map();
+        const allMarine = new Map();
 
-        // Cache the response
-        setCache(CACHE_KEY, jsonText);
+        results.forEach(data => {
+          if (!data || !data.warnings) return;
+
+          // Add national warnings
+          if (data.warnings.national) {
+            data.warnings.national.forEach(w => {
+              // Use headline as primary key since id/capId can be 0 for multiple warnings
+              const key = w.headline || w.id || w.capId;
+              if (!allNational.has(key)) {
+                allNational.set(key, w);
+              }
+            });
+          }
+
+          // Add marine warnings
+          if (data.warnings.marine) {
+            data.warnings.marine.forEach(w => {
+              // Use headline as primary key since id/capId can be 0 for multiple warnings
+              const key = w.headline || w.id || w.capId;
+              if (!allMarine.has(key)) {
+                allMarine.set(key, w);
+              }
+            });
+          }
+        });
+
+        const mergedData = {
+          national: Array.from(allNational.values()),
+          marine: Array.from(allMarine.values())
+        };
+
+        // Cache the merged response
+        setCache(CACHE_KEY, mergedData);
 
         // Render warnings
-        renderWarnings(data.warnings.national, 'warnings', 'No active weather warnings for Ireland');
-        renderWarnings(data.warnings.marine, 'marine-warnings', 'No active marine warnings');
+        renderWarnings(mergedData.national, 'warnings', 'No active weather warnings for Ireland');
+        renderWarnings(mergedData.marine, 'marine-warnings', 'No active marine warnings');
         updateCacheStatus(Date.now(), false);
 
       } catch (error) {
@@ -377,6 +441,11 @@ header {
     const OPEN_METEO_API = 'https://api.open-meteo.com/v1/forecast?latitude=53.4167&longitude=-6.45&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code&timezone=Europe%2FDublin';
 
     async function fetchTemperature() {
+      // Show loading state
+      document.getElementById('temperature').textContent = '...';
+      document.getElementById('weather-condition').textContent = '';
+      document.getElementById('weather-details').textContent = 'Loading...';
+
       // Try Met Éireann first
       try {
         const response = await fetch(CORS_PROXY + encodeURIComponent(MET_EIREANN_WEATHER_API));
@@ -497,8 +566,7 @@ header {
       }, 1000);
 
       autoRefreshTimer = setInterval(() => {
-        fetchAllWarnings(true);
-        fetchTemperature();
+        refreshAll();
         secondsRemaining = AUTO_REFRESH_INTERVAL / 1000;
       }, AUTO_REFRESH_INTERVAL);
     }
@@ -513,6 +581,41 @@ header {
     // Start auto-refresh automatically
     document.getElementById('countdown').style.display = 'inline';
     startAutoRefresh();
+
+    // Unified refresh function with visual feedback
+    async function refreshAll() {
+      const tempCard = document.getElementById('temperature-card');
+      const warningsDiv = document.getElementById('warnings');
+      const marineDiv = document.getElementById('marine-warnings');
+
+      // Add visual pulse animation
+      tempCard.classList.add('refreshing');
+      warningsDiv.classList.add('refreshing');
+      marineDiv.classList.add('refreshing');
+
+      // Show loading states
+      document.getElementById('temperature').textContent = '...';
+      document.getElementById('weather-condition').textContent = '';
+      document.getElementById('weather-details').textContent = 'Loading...';
+      warningsDiv.innerHTML = '<div class="loading">Loading weather warnings...</div>';
+      marineDiv.innerHTML = '<div class="loading">Loading marine warnings...</div>';
+
+      // Small delay to ensure loading state is visible
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      // Fetch all data
+      await Promise.all([
+        fetchAllWarnings(true),
+        fetchTemperature()
+      ]);
+
+      // Remove animation after completion
+      setTimeout(() => {
+        tempCard.classList.remove('refreshing');
+        warningsDiv.classList.remove('refreshing');
+        marineDiv.classList.remove('refreshing');
+      }, 500);
+    }
   </script>
 </body>
 </html>
