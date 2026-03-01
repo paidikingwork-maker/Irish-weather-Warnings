@@ -314,7 +314,6 @@ header {
             ${description ? `<p>${escapeHtml(description)}</p>` : ''}
             ${warning.issuedAt ? `<p class="date">Issued: ${warning.issuedAt}</p>` : ''}
             ${warning.validUntil ? `<p class="date">Valid until: ${warning.validUntil}</p>` : ''}
-            ${warning.regions && warning.regions.length > 0 ? `<p class="date">Regions: ${warning.regions.join(', ')}</p>` : ''}
           </div>
         `;
       });
